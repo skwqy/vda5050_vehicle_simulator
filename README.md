@@ -1,6 +1,6 @@
 # VDA5050 Robot Simulator
 
-This project is a VDA5050-compliant robot simulator written in Rust. It simulates the behavior of automated guided vehicles (AGVs) following the VDA5050 standard, using an MQTT broker to communicate. The simulator is configurable via a TOML file, and it supports basic customization like vehicle configuration, state update frequency, and more. Also simulator supoorts create multiple simulator at the same time.
+This project is a VDA5050-compliant robot simulator written in Rust. It simulates the behavior of automated guided vehicles (AGVs) following the VDA5050 standard, using an MQTT broker to communicate. The simulator is configurable via a TOML file, and it supports basic customization like vehicle configuration, state update frequency, and more. Multiple robots can be simulated at once (`robot_count` / serial suffixes).
 
 ## Features
 
@@ -8,7 +8,8 @@ This project is a VDA5050-compliant robot simulator written in Rust. It simulate
 - Communicates with a broker via MQTT.
 - Configurable vehicle, map, and simulator settings.
 - Supports visualization updates and actions.
-- Supports trajectory
+- Supports trajectory and optional OpenTCS map–driven motion (`[map]`).
+- Per-vehicle file logging (rolling files, optional separate visualization payload log); see [Logging](#logging).
 
 ## Configuration
 
@@ -59,6 +60,10 @@ To **disable** visualization file logging, set it to `false` or omit it (the def
 
 Related options (also under `[settings]`): `log_max_file_bytes` and `log_max_files` apply to each log stream, including `visualization.log`.
 
+### Map (optional)
+
+If `[map] enabled = true` and `xml_path` points to a valid OpenTCS plant XML, the simulator can snap the AGV to `initial_point_name` and resolve node/edge geometry for motion. See `config.toml` and `[map.name_prefixes]` for point/path name rules (aligned with typical AOS / OpenTCS naming).
+
 ### MQTT Broker Section
 - **host**: The address of the MQTT broker (default: localhost).
 - **port**: The port of the MQTT broker (default: 1883).
@@ -76,10 +81,12 @@ Related options (also under `[settings]`): `log_max_file_bytes` and `log_max_fil
 ### Settings Section
 
 - **map_id**: Identifier for the map used in the simulation (e.g., "webots").
-- **state_frequency**: Frequency of state updates in Hertz (Hz). Determines how often the robot sends its current state to the broker.
-- **visualization_frequency**: Frequency of visualization updates in Hertz (Hz). Controls how often the simulator will send data for visualization purposes.
+- **state_frequency**: Retained for compatibility; periodic `state` timing follows `state_max_interval_secs` and event-driven publishes.
+- **state_max_interval_secs**: Maximum interval between `state` messages when no other event forces a publish (VDA-style heartbeat, often 30s).
+- **visualization_frequency**: Frequency of visualization updates in Hertz (Hz). Set `0` to disable visualization traffic.
 - **action_time**: The time it takes to complete an action (in seconds). This controls how long each task or action will take for the robot to execute.
 - **robot_count**: The number of robots being simulated. This allows you to simulate multiple robots within the same environment.
+- **serial_suffix_start**: Numeric suffix for the first vehicle (`serial_number` prefix + this value). Each additional robot increments by 1.
 - **speed**: The speed of the robot in meters per second, which dictates how fast the robot will move in the simulation.
 - **log_visualization_messages**: When `true`, records outgoing visualization JSON to `logs/<serial>/visualization.log`. When `false` (default), those payloads are not written to that file. Does not stop MQTT visualization traffic.
 - **log_max_file_bytes**: Maximum size in bytes per log file before rotation (default 10 MiB).
@@ -124,6 +131,21 @@ To set up and run the VDA5050 robot simulator, follow these steps:
 Once the simulator is running, it will start sending messages to the MQTT broker according to the configuration in the `config.toml` file. You can monitor the robot's state, actions, and other telemetry by subscribing to the relevant MQTT topics using a client or tool such as [MQTT Explorer](https://mqtt-explorer.com/).
 
 To visualize the robot's status and actions, you can adjust the `visualization_frequency` setting in `config.toml`.
+
+## Logging
+
+The simulator uses structured logging to **stderr** and, per vehicle, to files under `logs/<vehicle serial>/`:
+
+| File (per vehicle) | Content |
+|--------------------|---------|
+| `vehicle.log` (+ rotated `vehicle.log.1` …) | MC→AGV and AGV→MC message lines, MQTT connect/subscribe notices, and other `vehicle_*` log output. |
+| `visualization.log` (optional) | Outgoing visualization JSON only, if `log_visualization_messages = true`. |
+
+Rotation defaults: **10 MiB** per file, **10** files per stream (`log_max_file_bytes`, `log_max_files` in `[settings]`). Override verbosity with `RUST_LOG` (e.g. `RUST_LOG=debug`).
+
+## VDA orders: `released` and why the vehicle may stop
+
+VDA5050 orders carry **`released` flags** on nodes and edges. The simulator only drives along edges that are **released**. If the master control system sends a long route but leaves the **next** edge (or horizon) as **`released: false`**, the AGV will **stop at the end of the last released segment** until an **order update** releases further segments. This is expected behavior, not a transport “bug”. If the vehicle stops mid-route, inspect the latest `order` JSON in logs and check which edge is the first with `released: false` after the current position.
 
 ## License
 
