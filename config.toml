@@ -6,8 +6,8 @@ username = ""
 password = ""
 
 [vehicle]
-serial_number = "s1"
-manufacturer = "rikeb"
+serial_number = "Vehicle_2"
+manufacturer = "skwqy"
 vda_version = "v2"
 vda_full_version = "2.0.0"
 
