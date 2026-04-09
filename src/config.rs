@@ -1,8 +1,30 @@
+use std::path::PathBuf;
+
 use config_file::FromConfigFile;
 use serde::Deserialize;
 
+/// Prefer `config.toml` next to the executable (portable copy), else the file in the current
+/// working directory (e.g. `cargo run` from the repo root).
+fn resolve_config_path() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let beside = dir.join("config.toml");
+            if beside.is_file() {
+                return beside;
+            }
+        }
+    }
+    PathBuf::from("config.toml")
+}
+
 pub fn get_config() -> Config {
-    return Config::from_config_file("config.toml").unwrap();
+    let path = resolve_config_path();
+    Config::from_config_file(&path).unwrap_or_else(|e| {
+        panic!(
+            "Failed to load config from {}: {e}",
+            path.display()
+        )
+    })
 }
 
 #[derive(Deserialize, Clone)]

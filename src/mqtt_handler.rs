@@ -1,4 +1,4 @@
-use futures_util::StreamExt;
+use futures_util::{pin_mut, StreamExt};
 use paho_mqtt as mqtt;
 use std::sync::Arc;
 use std::{process, time::Duration};
@@ -35,13 +35,14 @@ pub async fn subscribe_vda_messages(
 
     let qos = vec![1; topics.len()];
     let mut mqtt_client = create_mqtt_client();
-    let mut message_stream = mqtt_client.get_stream(25);
+    let message_stream = mqtt_client.get_stream(25);
 
     connect_to_broker(&mqtt_client).await;
     subscribe_to_topics(&mqtt_client, &topics, &qos).await;
 
     println!("Waiting for messages on topics: {:?}", topics);
-    
+
+    pin_mut!(message_stream);
     while let Some(msg_opt) = message_stream.next().await {
         if let Some(msg) = msg_opt {
             handle_incoming_message(msg, &simulator).await;
@@ -102,7 +103,7 @@ async fn connect_to_broker(mqtt_client: &mqtt::AsyncClient) {
         builder.clean_start(true);
         if let (Some(username), Some(password)) = (&broker_config.username, &broker_config.password) {
             builder.user_name(username);
-            builder.password(password);
+            builder.password(password.as_str());
         }
         builder.finalize()
     };
