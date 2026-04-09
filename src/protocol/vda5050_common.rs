@@ -112,7 +112,7 @@ pub struct Trajectory {
 
 /// The AGVs velocity in vehicle coordinates.
 #[serde_with::skip_serializing_none]
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Velocity {
     /// The AGVs velocity in its x direction.

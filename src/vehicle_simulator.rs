@@ -1,17 +1,22 @@
 use chrono::{DateTime, Utc};
 use paho_mqtt as mqtt;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 
 use crate::config;
+use crate::map::MapModel;
 use crate::mqtt_utils;
+use crate::navigation::{
+    closest_s_on_polyline, polyline_length_m, position_at_s, resolve_distance_per_tick,
+};
 use crate::utils;
 use crate::protocol::vda_2_0_0::vda5050_2_0_0_action::{Action, ActionParameterValue};
 use crate::protocol::vda_2_0_0::vda5050_2_0_0_connection::{Connection, ConnectionState};
 use crate::protocol::vda_2_0_0::vda5050_2_0_0_state::{State, ActionState, ActionStatus, NodeState, EdgeState, OperatingMode, BatteryState, SafetyState, EStop, Load};
-use crate::protocol::vda5050_common::{BoundingBoxReference, LoadDimensions};
+use crate::protocol::vda5050_common::{BoundingBoxReference, LoadDimensions, Velocity};
 use crate::protocol::vda_2_0_0::vda5050_2_0_0_visualization::Visualization;
-use crate::protocol::vda_2_0_0::vda5050_2_0_0_order::Order;
+use crate::protocol::vda_2_0_0::vda5050_2_0_0_order::{Edge, Order};
 use crate::protocol::vda_2_0_0::vda5050_2_0_0_instant_actions::InstantActions;
 use crate::protocol::vda5050_common::{AgvPosition, NodePosition};
 
@@ -28,10 +33,19 @@ pub struct VehicleSimulator {
 
     config: config::Config,
     action_start_time: Option<DateTime<Utc>>,
+
+    /// Shared read-only OpenTCS map (optional).
+    map: Option<Arc<MapModel>>,
+    /// World polyline (m) for the current order edge when not using VDA NURBS.
+    edge_polyline_m: Vec<(f32, f32)>,
+    /// Arc length progress along `edge_polyline_m`.
+    edge_distance_m: f32,
+    /// Which order edge `sequence_id` the polyline motion refers to.
+    motion_edge_sequence: Option<u64>,
 }
 
 impl VehicleSimulator {
-    pub fn new(config: config::Config) -> Self {
+    pub fn new(config: config::Config, map: Option<Arc<MapModel>>) -> Self {
         let base_topic = mqtt_utils::generate_vda_mqtt_base_topic(
             &config.mqtt_broker.vda_interface,
             &config.vehicle.vda_version,
@@ -47,7 +61,7 @@ impl VehicleSimulator {
         let (state, agv_position) = Self::create_initial_state(&config);
         let visualization = Self::create_initial_visualization(&config, &agv_position);
 
-        Self {
+        let mut sim = Self {
             connection_topic,
             connection,
             state_topic,
@@ -58,7 +72,56 @@ impl VehicleSimulator {
             instant_actions: None,
             action_start_time: None,
             config,
-        }
+            map,
+            edge_polyline_m: Vec::new(),
+            edge_distance_m: 0.0,
+            motion_edge_sequence: None,
+        };
+        sim.apply_initial_point_from_map();
+        sim
+    }
+
+    /// If `[map] initial_point_name` is set and the map contains that point, snap AGV there (aligned
+    /// with Java `simulation.initialPointName`).
+    fn apply_initial_point_from_map(&mut self) {
+        let Some(name) = self
+            .config
+            .map
+            .initial_point_name
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        else {
+            return;
+        };
+        let Some(map) = self.map.as_ref() else {
+            eprintln!(
+                "map.initial_point_name is set to {:?} but no map is loaded (enable [map] or fix load); using random start",
+                name
+            );
+            return;
+        };
+        let Some((x_m, y_m)) = map.point_world(name) else {
+            eprintln!(
+                "map.initial_point_name {:?} not found in plant model; using random start",
+                name
+            );
+            return;
+        };
+
+        let agv = AgvPosition {
+            x: x_m as f32,
+            y: y_m as f32,
+            position_initialized: true,
+            theta: 0.0,
+            map_id: self.config.settings.map_id.clone(),
+            deviation_range: None,
+            map_description: None,
+            localization_score: None,
+        };
+        self.state.agv_position = Some(agv.clone());
+        self.state.last_node_id = name.to_string();
+        self.visualization.agv_position = Some(agv);
     }
 
     fn create_initial_connection(config: &config::Config) -> Connection {
@@ -468,18 +531,39 @@ impl VehicleSimulator {
         // Process nodes and edges
         self.process_order_nodes();
         self.process_order_edges();
+
+        self.edge_polyline_m.clear();
+        self.edge_distance_m = 0.0;
+        self.motion_edge_sequence = None;
     }
 
     fn process_order_nodes(&mut self) {
         let order = self.order.as_ref().unwrap();
+        let map_id = self.config.settings.map_id.clone();
         let nodes = order.nodes.clone();
         for node in &nodes {
+            let mut node_position = node.node_position.clone();
+            if node_position.is_none() {
+                if let Some(ref map) = self.map {
+                    if let Some((xm, ym)) = map.point_world(&node.node_id) {
+                        node_position = Some(NodePosition {
+                            x: xm as f32,
+                            y: ym as f32,
+                            theta: None,
+                            allowed_deviation_xy: None,
+                            allowed_deviation_theta: None,
+                            map_id: map_id.clone(),
+                            map_description: None,
+                        });
+                    }
+                }
+            }
             let node_state = NodeState {
                 node_id: node.node_id.clone(),
                 sequence_id: node.sequence_id.clone(),
                 released: node.released.clone(),
                 node_description: node.node_description.clone(),
-                node_position: node.node_position.clone(),
+                node_position,
             };
             self.state.node_states.push(node_state);
 
@@ -599,50 +683,241 @@ impl VehicleSimulator {
         // Remove completed nodes
         if self.state.node_states.len() == 1 {
             self.state.node_states.remove(0);
+            self.state.driving = false;
+            self.state.velocity = None;
+            self.state.distance_since_last_node = None;
             return;
         }
 
-        // Collect data before any mutable operations
-        let next_node = match self.get_next_node() {
-            Some(node) => node,
-            None => return,
+        let (next_node_id, next_node_sequence_id, next_node_position, next_released) = {
+            let next_node = match self.get_next_node() {
+                Some(node) => node,
+                None => return,
+            };
+            let Some(np) = next_node.node_position.clone() else {
+                return;
+            };
+            (
+                next_node.node_id.clone(),
+                next_node.sequence_id,
+                np,
+                next_node.released,
+            )
         };
-        
-        if !next_node.released {
+
+        if !next_released {
+            self.state.driving = false;
+            self.state.velocity = None;
             return;
         }
 
-        let vehicle_position = self.state.agv_position.as_ref().unwrap();
-        let next_node_position = match next_node.node_position.as_ref() {
-            Some(pos) => pos,
-            None => return,
-        };
+        let vehicle_position = self.state.agv_position.as_ref().unwrap().clone();
 
-        let updated_position = self.calculate_new_position(vehicle_position, next_node_position, &next_node);
-        let distance = utils::get_distance(
-            vehicle_position.x,
-            vehicle_position.y,
-            next_node_position.x,
-            next_node_position.y,
+        let edge_seq = next_node_sequence_id.saturating_sub(1);
+        let order_edge = self.find_order_edge(edge_seq).cloned();
+
+        // Follow VDA NURBS only when the master sends a non-trivial curve. Many fleets send
+        // degree-1 / two-point trajectories (straight chord between nodes); in that case prefer
+        // OpenTCS `pathLayout` geometry from the loaded plant model when available.
+        let use_nurbs = order_edge
+            .as_ref()
+            .and_then(|e| e.trajectory.as_ref())
+            .map(|t| !Self::trajectory_is_degree_one_segment(t))
+            .unwrap_or(false);
+        let arrival_eps = self.config.map.arrival_threshold_m;
+        let dt = self.config.map.sim_dt_seconds;
+
+        if use_nurbs {
+            self.edge_polyline_m.clear();
+            self.motion_edge_sequence = None;
+
+            let step = resolve_distance_per_tick(
+                order_edge.as_ref(),
+                order_edge.as_ref().and_then(|e| self.map_path_max_m_s(e)),
+                self.config.settings.speed,
+                dt,
+            );
+            let updated_position = self.calculate_new_position_with_speed(
+                &vehicle_position,
+                &next_node_position,
+                next_node_sequence_id,
+                step,
+            );
+            let dist_end = utils::get_distance(
+                updated_position.0,
+                updated_position.1,
+                next_node_position.x,
+                next_node_position.y,
+            );
+            let should_arrive = dist_end < arrival_eps.max(step * 2.0);
+
+            self.apply_kinematics_to_state(
+                updated_position.0,
+                updated_position.1,
+                updated_position.2,
+                step / dt.max(1e-6),
+                should_arrive,
+                next_node_id,
+                next_node_sequence_id,
+                order_edge.as_ref(),
+            );
+            return;
+        }
+
+        // Map polyline or straight chord
+        let poly = self.build_edge_polyline(order_edge.as_ref(), &vehicle_position, &next_node_position);
+
+        if poly.len() < 2 {
+            return;
+        }
+
+        if self.motion_edge_sequence != Some(edge_seq) {
+            self.motion_edge_sequence = Some(edge_seq);
+            self.edge_polyline_m.clone_from(&poly);
+            self.edge_distance_m = closest_s_on_polyline(
+                vehicle_position.x,
+                vehicle_position.y,
+                &self.edge_polyline_m,
+            );
+        }
+
+        let total_l = polyline_length_m(&self.edge_polyline_m);
+        if total_l < 1e-6 {
+            return;
+        }
+
+        let path_max = order_edge.as_ref().and_then(|e| self.map_path_max_m_s(e));
+        let step = resolve_distance_per_tick(
+            order_edge.as_ref(),
+            path_max,
+            self.config.settings.speed,
+            dt,
         );
+        self.edge_distance_m = (self.edge_distance_m + step).min(total_l);
 
-        let should_arrive = distance < self.config.settings.speed + 0.1;
-        let next_node_id = next_node.node_id.clone();
-        let next_node_sequence_id = next_node.sequence_id.clone();
-        
-        // Update vehicle position
-        if let Some(agv_pos) = &mut self.state.agv_position {
-            agv_pos.x = updated_position.0;
-            agv_pos.y = updated_position.1;
-            agv_pos.theta = updated_position.2;
+        let (x, y, theta) = position_at_s(&self.edge_polyline_m, self.edge_distance_m);
+        let dist_end = utils::get_distance(x, y, next_node_position.x, next_node_position.y);
+        let should_arrive =
+            self.edge_distance_m >= total_l - 1e-4 || dist_end < arrival_eps;
+
+        let v_report = step / dt.max(1e-6);
+        self.apply_kinematics_to_state(
+            x,
+            y,
+            theta,
+            v_report,
+            should_arrive,
+            next_node_id,
+            next_node_sequence_id,
+            order_edge.as_ref(),
+        );
+    }
+
+    fn find_order_edge(&self, sequence_id: u64) -> Option<&Edge> {
+        self.order
+            .as_ref()?
+            .edges
+            .iter()
+            .find(|e| e.sequence_id == sequence_id)
+    }
+
+    /// `true` when trajectory is only a straight segment (VDA default chord), same case handled as
+    /// a line in `utils::iterate_position_with_trajectory`.
+    fn trajectory_is_degree_one_segment(t: &crate::protocol::vda5050_common::Trajectory) -> bool {
+        t.degree == 1 && t.control_points.len() == 2
+    }
+
+    fn map_path_max_m_s(&self, edge: &Edge) -> Option<f32> {
+        let map = self.map.as_ref()?;
+        let p = map.path_for_edge(&edge.edge_id, &edge.start_node_id, &edge.end_node_id)?;
+        if p.max_velocity_mm_s > 0.0 {
+            Some((p.max_velocity_mm_s * 1e-3) as f32)
+        } else {
+            None
         }
+    }
 
-        // Update visualization position
+    fn build_edge_polyline(
+        &self,
+        order_edge: Option<&Edge>,
+        veh: &AgvPosition,
+        dest: &NodePosition,
+    ) -> Vec<(f32, f32)> {
+        let dest_pt = (dest.x, dest.y);
+        if let (Some(map), Some(e)) = (self.map.as_ref(), order_edge) {
+            if let Some(p) = map.path_for_edge(&e.edge_id, &e.start_node_id, &e.end_node_id) {
+                if p.polyline_world_m.len() >= 2 {
+                    let mut v: Vec<(f32, f32)> = p
+                        .polyline_world_m
+                        .iter()
+                        .map(|&(a, b)| (a as f32, b as f32))
+                        .collect();
+                    if let Some(first) = v.first_mut() {
+                        *first = (veh.x, veh.y);
+                    }
+                    if let Some(last) = v.last_mut() {
+                        *last = dest_pt;
+                    }
+                    return v;
+                }
+            }
+        }
+        vec![(veh.x, veh.y), dest_pt]
+    }
+
+    fn chord_distance_since_last_node(
+        &self,
+        x: f32,
+        y: f32,
+        order_edge: Option<&Edge>,
+    ) -> Option<f32> {
+        let edge = order_edge?;
+        let prev_id = &edge.start_node_id;
+        for ns in &self.state.node_states {
+            if ns.node_id == *prev_id {
+                if let Some(np) = &ns.node_position {
+                    return Some(utils::get_distance(x, y, np.x, np.y));
+                }
+                break;
+            }
+        }
+        if let Some(map) = &self.map {
+            if let Some((px, py)) = map.point_world(prev_id) {
+                return Some(utils::get_distance(x, y, px as f32, py as f32));
+            }
+        }
+        None
+    }
+
+    fn apply_kinematics_to_state(
+        &mut self,
+        x: f32,
+        y: f32,
+        theta: f32,
+        speed: f32,
+        should_arrive: bool,
+        next_node_id: String,
+        next_node_sequence_id: u64,
+        order_edge: Option<&Edge>,
+    ) {
+        self.state.driving = !should_arrive;
+        self.state.distance_since_last_node = self.chord_distance_since_last_node(x, y, order_edge);
+        self.state.velocity = Some(Velocity {
+            vx: Some(speed * theta.cos()),
+            vy: Some(speed * theta.sin()),
+            omega: None,
+        });
+
+        if let Some(agv_pos) = &mut self.state.agv_position {
+            agv_pos.x = x;
+            agv_pos.y = y;
+            agv_pos.theta = theta;
+        }
         if let Some(agv_pos) = &self.state.agv_position {
             self.visualization.agv_position = Some(agv_pos.clone());
+            self.visualization.velocity = self.state.velocity.clone();
         }
 
-        // Check if reached next node
         if should_arrive {
             if !self.state.node_states.is_empty() {
                 self.state.node_states.remove(0);
@@ -650,9 +925,11 @@ impl VehicleSimulator {
             if !self.state.edge_states.is_empty() {
                 self.state.edge_states.remove(0);
             }
-
             self.state.last_node_id = next_node_id;
             self.state.last_node_sequence_id = next_node_sequence_id;
+            self.motion_edge_sequence = None;
+            self.edge_polyline_m.clear();
+            self.edge_distance_m = 0.0;
         }
     }
 
@@ -668,45 +945,39 @@ impl VehicleSimulator {
         Some(&self.state.node_states[last_node_index + 1])
     }
 
-    fn calculate_new_position(
+    fn calculate_new_position_with_speed(
         &self,
         vehicle_position: &AgvPosition,
         next_node_position: &NodePosition,
-        next_node: &NodeState,
+        next_node_sequence_id: u64,
+        speed: f32,
     ) -> (f32, f32, f32) {
-        let next_edge = self.state.edge_states.iter()
-            .find(|edge| edge.sequence_id == next_node.sequence_id - 1);
+        let next_edge = self
+            .state
+            .edge_states
+            .iter()
+            .find(|edge| edge.sequence_id == next_node_sequence_id - 1);
 
         if let Some(edge) = next_edge {
             if let Some(trajectory) = &edge.trajectory {
-                utils::iterate_position_with_trajectory(
+                return utils::iterate_position_with_trajectory(
                     vehicle_position.x,
                     vehicle_position.y,
                     next_node_position.x,
                     next_node_position.y,
-                    self.config.settings.speed,
+                    speed,
                     trajectory.clone(),
-                )
-            } else {
-                utils::iterate_position(
-                    vehicle_position.x,
-                    vehicle_position.y,
-                    next_node_position.x,
-                    next_node_position.y,
-                    self.config.settings.speed,
-                )
+                );
             }
-        } else {
-            utils::iterate_position(
-                vehicle_position.x,
-                vehicle_position.y,
-                next_node_position.x,
-                next_node_position.y,
-                self.config.settings.speed,
-            )
         }
+        utils::iterate_position(
+            vehicle_position.x,
+            vehicle_position.y,
+            next_node_position.x,
+            next_node_position.y,
+            speed,
+        )
     }
-
 }
 
 struct InitPositionParams {

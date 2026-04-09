@@ -1,6 +1,6 @@
 use vda5050_vehicle_simulator::{
     vehicle_simulator::VehicleSimulator,
-    config::{Config, MqttBrokerConfig, VehicleConfig, Settings},
+    config::{Config, MapConfig, MqttBrokerConfig, VehicleConfig, Settings},
     protocol::vda_2_0_0::{
         vda5050_2_0_0_action::{Action, ActionParameter, ActionParameterValue, BlockingType},
         vda5050_2_0_0_instant_actions::InstantActions,
@@ -33,7 +33,9 @@ fn create_test_config() -> Config {
             action_time: 1.0,
             robot_count: 1,
             speed: 0.1,
+            serial_suffix_start: 1,
         },
+        map: MapConfig::default(),
     }
 }
 
@@ -120,7 +122,8 @@ fn create_small_order() -> Order {
                 released: true,
                 start_node_id: "node_001".to_string(),
                 end_node_id: "node_002".to_string(),
-                max_speed: Some(0.5),
+                // Omit m/s cap so per-tick motion matches legacy `settings.speed` in tests
+                max_speed: None,
                 max_height: None,
                 min_height: None,
                 orientation: None,
@@ -139,7 +142,7 @@ fn create_small_order() -> Order {
 #[test]
 fn test_init_position_instant_action() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // Create instant actions with initPosition
     let instant_actions = InstantActions {
@@ -184,7 +187,7 @@ fn test_init_position_instant_action() {
 #[test]
 fn test_small_order_completion() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // First, initialize position
     let init_action = create_init_position_action();
@@ -308,7 +311,7 @@ fn test_init_position_parameter_extraction() {
 #[test]
 fn test_vehicle_ready_for_new_order() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // Initially, vehicle should not be ready (position not initialized)
     assert!(!simulator.is_vehicle_ready_for_new_order());
@@ -333,7 +336,7 @@ fn test_vehicle_ready_for_new_order() {
 #[test]
 fn test_order_rejection_when_not_ready() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // Try to process order without initializing position
     let order = create_small_order();
@@ -347,7 +350,7 @@ fn test_order_rejection_when_not_ready() {
 #[test]
 fn test_action_state_management() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // Create instant actions
     let instant_actions = InstantActions {
@@ -482,7 +485,7 @@ fn create_drop_action_without_load_id() -> Action {
 #[test]
 fn test_pick_action_instant_action() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // Initially, no loads
     assert_eq!(simulator.state.loads.len(), 0);
@@ -523,7 +526,7 @@ fn test_pick_action_instant_action() {
 #[test]
 fn test_pick_action_with_all_parameters() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // Create instant actions with pick action containing all parameters
     let pick_action = create_pick_action_with_all_params("LOAD-002");
@@ -566,7 +569,7 @@ fn test_pick_action_with_all_parameters() {
 #[test]
 fn test_drop_action_instant_action_with_load_id() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // First, pick a load
     let pick_action = create_pick_action("LOAD-003", "box", 10.0);
@@ -607,7 +610,7 @@ fn test_drop_action_instant_action_with_load_id() {
 #[test]
 fn test_drop_action_instant_action_without_load_id() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // First, pick a load
     let pick_action = create_pick_action("LOAD-004", "box", 15.0);
@@ -647,7 +650,7 @@ fn test_drop_action_instant_action_without_load_id() {
 #[test]
 fn test_multiple_pick_actions() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // Pick multiple loads
     let pick_action_1 = create_pick_action("LOAD-005", "pallet", 20.0);
@@ -674,7 +677,7 @@ fn test_multiple_pick_actions() {
 #[test]
 fn test_drop_specific_load_from_multiple() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // Pick multiple loads
     let pick_action_1 = create_pick_action("LOAD-007", "pallet", 30.0);
@@ -717,7 +720,7 @@ fn test_drop_specific_load_from_multiple() {
 #[test]
 fn test_pick_action_as_order_action() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // Initialize position first
     let init_action = create_init_position_action();
@@ -761,7 +764,7 @@ fn test_pick_action_as_order_action() {
 #[test]
 fn test_drop_action_as_order_action() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // Initialize position first
     let init_action = create_init_position_action();
@@ -818,7 +821,7 @@ fn test_drop_action_as_order_action() {
 #[test]
 fn test_pick_and_drop_sequence() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // Pick load
     let pick_action = create_pick_action("LOAD-011", "pallet", 35.0);
@@ -874,7 +877,7 @@ fn test_pick_and_drop_sequence() {
 #[test]
 fn test_drop_nonexistent_load() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // Try to drop a load that doesn't exist
     let drop_action = create_drop_action("NONEXISTENT-LOAD");
@@ -897,7 +900,7 @@ fn test_drop_nonexistent_load() {
 #[test]
 fn test_pick_action_with_minimal_parameters() {
     let config = create_test_config();
-    let mut simulator = VehicleSimulator::new(config);
+    let mut simulator = VehicleSimulator::new(config, None);
     
     // Create pick action with only loadId
     let pick_action = Action {
@@ -934,4 +937,29 @@ fn test_pick_action_with_minimal_parameters() {
     assert_eq!(load.weight, None);
     assert!(load.bounding_box_reference.is_none());
     assert!(load.load_dimensions.is_none());
-} 
+}
+
+#[test]
+fn test_initial_point_from_map_matches_java_initial_point_name() {
+    use std::sync::Arc;
+    use vda5050_vehicle_simulator::map::{MapModel, MapPoint};
+
+    let mut config = create_test_config();
+    config.map.initial_point_name = Some("Point_X".to_string());
+
+    let mut model = MapModel::default();
+    model.points.insert(
+        "Point_X".to_string(),
+        MapPoint {
+            x_m: 1.25,
+            y_m: -3.0,
+        },
+    );
+    let sim = VehicleSimulator::new(config, Some(Arc::new(model)));
+    assert_eq!(sim.state.last_node_id, "Point_X");
+    assert_eq!(sim.state.last_node_sequence_id, 0);
+    let p = sim.state.agv_position.as_ref().unwrap();
+    assert!((p.x - 1.25_f32).abs() < 1e-5);
+    assert!((p.y - (-3.0_f32)).abs() < 1e-5);
+    assert!(p.position_initialized);
+}

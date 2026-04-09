@@ -3,7 +3,9 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 mod config;
+mod map;
 mod mqtt_utils;
+mod navigation;
 mod protocol;
 mod utils;
 mod vehicle_simulator;
@@ -16,8 +18,28 @@ use mqtt_handler::{subscribe_vda_messages, publish_vda_messages};
 async fn main() {
     let config = crate::config::get_config();
 
+    let map_model = if config.map.enabled {
+        match map::load_map_arc(&config.map) {
+            Ok(m) => {
+                println!(
+                    "Map loaded: {} points, {} paths from {}",
+                    m.points.len(),
+                    m.paths.len(),
+                    config.map.xml_path
+                );
+                Some(m)
+            }
+            Err(e) => {
+                eprintln!("Map load failed (running without map geometry): {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     for robot_index in 0..config.settings.robot_count {
-        spawn_vehicle_simulator(config.clone(), robot_index).await;
+        spawn_vehicle_simulator(config.clone(), robot_index, map_model.clone()).await;
     }
 
     // Keep the main thread alive
@@ -26,13 +48,21 @@ async fn main() {
     }
 }
 
-async fn spawn_vehicle_simulator(config: config::Config, robot_index: u32) {
+async fn spawn_vehicle_simulator(
+    config: config::Config,
+    robot_index: u32,
+    map_model: Option<std::sync::Arc<map::MapModel>>,
+) {
     // Create vehicle-specific configuration
     let mut vehicle_config = config.clone();
-    vehicle_config.vehicle.serial_number = format!("{}{}", config.vehicle.serial_number, robot_index + 1);
+    vehicle_config.vehicle.serial_number = format!(
+        "{}{}",
+        config.vehicle.serial_number,
+        config.settings.serial_suffix_start + robot_index
+    );
     
     // Create and share vehicle simulator
-    let vehicle_simulator = VehicleSimulator::new(vehicle_config.clone());
+    let vehicle_simulator = VehicleSimulator::new(vehicle_config.clone(), map_model);
     let shared_simulator = Arc::new(Mutex::new(vehicle_simulator));
     
     // Clone for async tasks

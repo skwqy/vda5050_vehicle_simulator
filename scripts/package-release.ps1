@@ -18,6 +18,14 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 Copy-Item $exe $out -Force
 Copy-Item (Join-Path $root "config.toml") $out -Force
 
+$mapsSrc = Join-Path $root "maps"
+if (Test-Path $mapsSrc) {
+    Copy-Item $mapsSrc (Join-Path $out "maps") -Recurse -Force
+    Write-Host "Copied maps\ -> $out\maps\"
+} else {
+    Write-Warning "maps folder not found at $mapsSrc - skipped (add maps for [map].xml_path)"
+}
+
 Write-Host ""
 Write-Host "Done. Copy this folder elsewhere and run $exeName"
 Write-Host $out

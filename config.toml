@@ -1,20 +1,37 @@
 [mqtt_broker]
 host = "localhost"
 port = "1883"
-vda_interface = "uagv"
+vda_interface = "defaultInterface"
 username = ""
 password = ""
 
 [vehicle]
-serial_number = "Vehicle_2"
-manufacturer = "skwqy"
+serial_number = "Vehicle_"
+manufacturer = "defaultManufacturer"
 vda_version = "v2"
-vda_full_version = "2.0.0"
+vda_full_version = "2.1.0"
+
+[map]
+enabled = true
+xml_path = "maps/youle-final-4.xml"
+layout_scale_mm = 1.0
+layout_flip_y = false
+arrival_threshold_m = 0.08
+sim_dt_seconds = 0.05
+# OpenTCS point name for startup pose (requires enabled = true and successful load), like Java simulation.initialPointName
+initial_point_name = "Point_1"
+# Same idea as aos-backend yeefungagv.plc.name-prefixes + aos.vda5050.map-name-prefixes
+[map.name_prefixes]
+apply_stripping = true
+point_prefix = "Point_"
+path_prefix = "Path_"
 
 [settings]
-map_id = "webots"
+map_id = ""
 state_frequency = 1
 visualization_frequency = 1
 action_time = 1.0
 robot_count = 1
 speed = 0.05
+# First vehicle serial suffix (default 1). Example: prefix "Vehicle_" + start 2 → "Vehicle_2", then "Vehicle_3", …
+serial_suffix_start = 2
