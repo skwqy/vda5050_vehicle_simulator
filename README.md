@@ -147,6 +147,11 @@ Rotation defaults: **10 MiB** per file, **10** files per stream (`log_max_file_b
 
 VDA5050 orders carry **`released` flags** on nodes and edges. The simulator only drives along edges that are **released**. If the master control system sends a long route but leaves the **next** edge (or horizon) as **`released: false`**, the AGV will **stop at the end of the last released segment** until an **order update** releases further segments. This is expected behavior, not a transport “bug”. If the vehicle stops mid-route, inspect the latest `order` JSON in logs and check which edge is the first with `released: false` after the current position.
 
+## Further documentation
+
+- [State publish design](./docs/vda5050-state-publish-design.md) — event-driven vs periodic `state` publishes (VDA baseline heartbeat).
+- [Map-driven motion](./docs/map-driven-motion-design.md) — integrating OpenTCS map geometry with simulator motion.
+
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](./LICENSE) file for more details.
