@@ -75,10 +75,11 @@ async fn spawn_vehicle_simulator(
         simulator_for_subscribe,
     ));
 
-    // Spawn MQTT publishing task
+    // Spawn MQTT publishing task (state: event + heartbeat per docs/vda5050-state-publish-design.md)
     tokio::spawn(publish_vda_messages(
         simulator_for_publish,
-        config.settings.state_frequency,
+        config.settings.state_max_interval_secs,
+        config.map.sim_dt_seconds,
         config.settings.visualization_frequency,
     ));
 }

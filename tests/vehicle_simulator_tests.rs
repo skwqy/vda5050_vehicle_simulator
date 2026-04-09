@@ -34,6 +34,7 @@ fn create_test_config() -> Config {
             robot_count: 1,
             speed: 0.1,
             serial_suffix_start: 1,
+            state_max_interval_secs: 30,
         },
         map: MapConfig::default(),
     }

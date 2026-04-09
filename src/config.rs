@@ -48,14 +48,23 @@ fn default_serial_suffix_start() -> u32 {
     1
 }
 
+fn default_state_max_interval_secs() -> u64 {
+    30
+}
+
 #[derive(Deserialize, Clone)]
 pub struct Settings {
     pub action_time: f32,
     pub speed: f32,
     pub robot_count: u32,
+    /// Retained for existing `config.toml`; periodic `state` uses `state_max_interval_secs`.
+    #[allow(dead_code)]
     pub state_frequency: u64,
     pub visualization_frequency: u64,
     pub map_id: String,
+    /// Maximum time between `state` publishes when no event triggers (default 30s, VDA product baseline).
+    #[serde(default = "default_state_max_interval_secs")]
+    pub state_max_interval_secs: u64,
     /// First robot uses this numeric suffix appended to `vehicle.serial_number`; each additional
     /// robot increments by 1 (e.g. start 2 → …2, …3, …).
     #[serde(default = "default_serial_suffix_start")]

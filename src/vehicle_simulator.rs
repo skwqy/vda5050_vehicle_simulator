@@ -42,6 +42,8 @@ pub struct VehicleSimulator {
     edge_distance_m: f32,
     /// Which order edge `sequence_id` the polyline motion refers to.
     motion_edge_sequence: Option<u64>,
+    /// Set when state should be published before the next heartbeat (order, loads, node arrival, …).
+    state_publish_pending: bool,
 }
 
 impl VehicleSimulator {
@@ -76,9 +78,19 @@ impl VehicleSimulator {
             edge_polyline_m: Vec::new(),
             edge_distance_m: 0.0,
             motion_edge_sequence: None,
+            state_publish_pending: false,
         };
         sim.apply_initial_point_from_map();
         sim
+    }
+
+    fn request_state_publish(&mut self) {
+        self.state_publish_pending = true;
+    }
+
+    /// Clears and returns whether an event-triggered state publish was requested.
+    pub fn take_state_publish_pending(&mut self) -> bool {
+        std::mem::take(&mut self.state_publish_pending)
     }
 
     /// If `[map] initial_point_name` is set and the map contains that point, snap AGV there (aligned
@@ -122,6 +134,7 @@ impl VehicleSimulator {
         self.state.agv_position = Some(agv.clone());
         self.state.last_node_id = name.to_string();
         self.visualization.agv_position = Some(agv);
+        self.request_state_publish();
     }
 
     fn create_initial_connection(config: &config::Config) -> Connection {
@@ -214,11 +227,13 @@ impl VehicleSimulator {
                 "initPosition" => self.handle_init_position_action(&action),
                 "pick" => self.handle_pick_action(&action),
                 "drop" => self.handle_drop_action(&action),
+                "stateRequest" => {} // state is published after FINISHED
                 _ => println!("Unknown action type: {}", action.action_type),
             }
 
             self.state.action_states[action_state_index].action_status = 
                 ActionStatus::Finished;
+            self.request_state_publish();
         }
     }
 
@@ -244,6 +259,7 @@ impl VehicleSimulator {
         
         self.state.last_node_id = init_params.last_node_id;
         self.visualization.agv_position = self.state.agv_position.clone();
+        self.request_state_publish();
     }
 
     fn extract_init_position_parameters(&self, action: &Action) -> InitPositionParams {
@@ -285,6 +301,7 @@ impl VehicleSimulator {
         let load = self.extract_load_parameters(action);
         self.state.loads.push(load);
         println!("Load added. Total loads: {}", self.state.loads.len());
+        self.request_state_publish();
     }
 
     fn handle_drop_action(&mut self, action: &Action) {
@@ -304,6 +321,7 @@ impl VehicleSimulator {
                 println!("First load removed. Total loads: {}", self.state.loads.len());
             }
         }
+        self.request_state_publish();
     }
 
     fn extract_load_parameters(&self, action: &Action) -> Load {
@@ -409,9 +427,14 @@ impl VehicleSimulator {
         self.visualization.timestamp = utils::get_timestamp();
         
         let json_visualization = serde_json::to_string(&self.visualization).unwrap();
-        mqtt_utils::mqtt_publish(mqtt_cli, &self.visualization_topic, &json_visualization)
-            .await
-            .unwrap();
+        mqtt_utils::mqtt_publish_qos(
+            mqtt_cli,
+            &self.visualization_topic,
+            &json_visualization,
+            mqtt::QOS_0,
+        )
+        .await
+        .unwrap();
     }
 
     pub async fn publish_state(&mut self, mqtt_cli: &mqtt::AsyncClient) {
@@ -419,7 +442,7 @@ impl VehicleSimulator {
         self.state.timestamp = utils::get_timestamp();
         
         let serialized = serde_json::to_string(&self.state).unwrap();
-        mqtt_utils::mqtt_publish(mqtt_cli, &self.state_topic, &serialized)
+        mqtt_utils::mqtt_publish_qos(mqtt_cli, &self.state_topic, &serialized, mqtt::QOS_0)
             .await
             .unwrap();
     }
@@ -438,6 +461,7 @@ impl VehicleSimulator {
             };
             self.state.action_states.push(action_state);
         }
+        self.request_state_publish();
     }
 
     pub fn process_order(&mut self, order_request: Order) {
@@ -474,7 +498,7 @@ impl VehicleSimulator {
         }
     }
 
-    fn can_accept_new_order(&self) -> bool {
+    fn can_accept_new_order(&mut self) -> bool {
         let has_unreleased_nodes = self.state.node_states.iter().any(|node| !node.released);
         
         if has_unreleased_nodes && self.state.node_states[0].sequence_id != self.state.last_node_sequence_id {
@@ -535,6 +559,7 @@ impl VehicleSimulator {
         self.edge_polyline_m.clear();
         self.edge_distance_m = 0.0;
         self.motion_edge_sequence = None;
+        self.request_state_publish();
     }
 
     fn process_order_nodes(&mut self) {
@@ -605,8 +630,9 @@ impl VehicleSimulator {
         self.state.action_states.push(action_state);
     }
 
-    fn reject_order(&self, reason: String) {
+    fn reject_order(&mut self, reason: String) {
         println!("Rejecting order: {}", reason);
+        self.request_state_publish();
     }
 
     pub fn update_state(&mut self) {
@@ -686,6 +712,7 @@ impl VehicleSimulator {
             self.state.driving = false;
             self.state.velocity = None;
             self.state.distance_since_last_node = None;
+            self.request_state_publish();
             return;
         }
 
@@ -706,8 +733,12 @@ impl VehicleSimulator {
         };
 
         if !next_released {
+            let was_driving = self.state.driving;
             self.state.driving = false;
             self.state.velocity = None;
+            if was_driving {
+                self.request_state_publish();
+            }
             return;
         }
 
@@ -900,7 +931,11 @@ impl VehicleSimulator {
         next_node_sequence_id: u64,
         order_edge: Option<&Edge>,
     ) {
+        let prev_driving = self.state.driving;
         self.state.driving = !should_arrive;
+        if prev_driving != self.state.driving || should_arrive {
+            self.request_state_publish();
+        }
         self.state.distance_since_last_node = self.chord_distance_since_last_node(x, y, order_edge);
         self.state.velocity = Some(Velocity {
             vx: Some(speed * theta.cos()),

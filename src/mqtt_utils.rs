@@ -22,12 +22,23 @@ pub fn mqtt_create_opts() -> mqtt::CreateOptions {
     return create_opts;
 }
 
-pub async fn mqtt_publish(mqtt_cli: &mqtt::AsyncClient, topic: &str, data: &str) -> mqtt::Result<()> {
+/// Publishes JSON with explicit MQTT QoS (VDA 6.2: `state`/`order`/… → QoS 0, `connection` → QoS 1).
+pub async fn mqtt_publish_qos(
+    mqtt_cli: &mqtt::AsyncClient,
+    topic: &str,
+    data: &str,
+    qos: i32,
+) -> mqtt::Result<()> {
     let json: serde_json::Value = serde_json::from_str(data).unwrap();
     let payload = serde_json::to_vec(&json).unwrap();
-    let msg = mqtt::Message::new(topic, payload, mqtt::QOS_1);
+    let msg = mqtt::Message::new(topic, payload, qos);
     mqtt_cli.publish(msg).await?;
     Ok(())
+}
+
+/// Default: QoS 1 (e.g. retained `connection` last will compatibility).
+pub async fn mqtt_publish(mqtt_cli: &mqtt::AsyncClient, topic: &str, data: &str) -> mqtt::Result<()> {
+    mqtt_publish_qos(mqtt_cli, topic, data, mqtt::QOS_1).await
 }
 
 pub fn generate_vda_mqtt_base_topic(

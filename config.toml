@@ -29,6 +29,8 @@ path_prefix = "Path_"
 [settings]
 map_id = ""
 state_frequency = 1
+# Max gap between state messages if no event (VDA baseline 30s)
+state_max_interval_secs = 30
 visualization_frequency = 1
 action_time = 1.0
 robot_count = 1

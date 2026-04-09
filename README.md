@@ -2,6 +2,19 @@
 
 This project is a VDA5050-compliant robot simulator written in Rust. It simulates the behavior of automated guided vehicles (AGVs) following the VDA5050 standard, using an MQTT broker to communicate. The simulator is configurable via a TOML file, and it supports basic customization like vehicle configuration, state update frequency, and more. Also simulator supoorts create multiple simulator at the same time.
 
+## Reference documentation and code (local paths)
+
+The following paths point to checked-out specs and related backends on the developer machine. They are recorded here so tools and contributors can open the same material when aligning behavior (protocol text, JSON schemas, OpenTCS plant model, AOS integration).
+
+| Resource | Local path |
+|----------|------------|
+| VDA5050 **2.1.0** release (markdown, schemas, assets) | `D:\source\yeefung\vda5050\VDA5050-release-2.1.0\` |
+| VDA5050 **3.0.0** release | `D:\source\yeefung\vda5050\VDA5050-release-3.0.0\` |
+| **OpenTCS** 7.2.1 | `D:\source\yeefung\openTCS\opentcs-7.2.1\` |
+| **AOS** backend (Yeefung) | `D:\source\yeefung\YFAOS\aos-backend\` |
+
+Adjust drive letters or parent folders if your checkout lives elsewhere; keep this table updated when switching machines or versions.
+
 ## Features
 
 - Simulates AGVs using the VDA5050 standard.
