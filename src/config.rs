@@ -52,6 +52,14 @@ fn default_state_max_interval_secs() -> u64 {
     30
 }
 
+fn default_log_max_file_bytes() -> u64 {
+    10 * 1024 * 1024
+}
+
+fn default_log_max_files() -> usize {
+    10
+}
+
 #[derive(Deserialize, Clone)]
 pub struct Settings {
     pub action_time: f32,
@@ -69,6 +77,15 @@ pub struct Settings {
     /// robot increments by 1 (e.g. start 2 → …2, …3, …).
     #[serde(default = "default_serial_suffix_start")]
     pub serial_suffix_start: u32,
+    /// When true, log outgoing `visualization` JSON to `logs/<serial>/visualization.log` (separate from main vehicle log).
+    #[serde(default)]
+    pub log_visualization_messages: bool,
+    /// Max size per log file before rotation (bytes). Default 10 MiB.
+    #[serde(default = "default_log_max_file_bytes")]
+    pub log_max_file_bytes: u64,
+    /// Max number of files per log stream (active + numbered backups); oldest is dropped when rotating.
+    #[serde(default = "default_log_max_files")]
+    pub log_max_files: usize,
 }
 
 /// OpenTCS plant XML and layout options. Omitted `[map]` in TOML → defaults (disabled).

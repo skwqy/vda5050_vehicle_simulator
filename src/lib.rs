@@ -1,4 +1,6 @@
 pub mod config;
+pub mod logging;
+mod size_rotating;
 pub mod map;
 pub mod mqtt_utils;
 pub mod navigation;

@@ -2,26 +2,22 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-mod config;
-mod map;
-mod mqtt_utils;
-mod navigation;
-mod protocol;
-mod utils;
-mod vehicle_simulator;
-mod mqtt_handler;
+use vda5050_vehicle_simulator::{
+    config, logging, map, mqtt_handler, vehicle_simulator::VehicleSimulator,
+};
 
-use vehicle_simulator::VehicleSimulator;
-use mqtt_handler::{subscribe_vda_messages, publish_vda_messages};
+use mqtt_handler::{publish_vda_messages, subscribe_vda_messages};
 
 #[tokio::main]
 async fn main() {
-    let config = crate::config::get_config();
+    let config = config::get_config();
+    let _log_guards = logging::init_from_config(&config).expect("failed to initialize logging");
 
     let map_model = if config.map.enabled {
         match map::load_map_arc(&config.map) {
             Ok(m) => {
-                println!(
+                tracing::info!(
+                    target: "bootstrap",
                     "Map loaded: {} points, {} paths from {}",
                     m.points.len(),
                     m.paths.len(),
@@ -30,7 +26,10 @@ async fn main() {
                 Some(m)
             }
             Err(e) => {
-                eprintln!("Map load failed (running without map geometry): {e}");
+                tracing::warn!(
+                    target: "bootstrap",
+                    "Map load failed (running without map geometry): {e}"
+                );
                 None
             }
         }
@@ -60,7 +59,9 @@ async fn spawn_vehicle_simulator(
         config.vehicle.serial_number,
         config.settings.serial_suffix_start + robot_index
     );
-    
+
+    let log_target = logging::vehicle_log_target(&vehicle_config.vehicle.serial_number);
+
     // Create and share vehicle simulator
     let vehicle_simulator = VehicleSimulator::new(vehicle_config.clone(), map_model);
     let shared_simulator = Arc::new(Mutex::new(vehicle_simulator));
@@ -73,6 +74,7 @@ async fn spawn_vehicle_simulator(
     tokio::spawn(subscribe_vda_messages(
         vehicle_config,
         simulator_for_subscribe,
+        log_target.clone(),
     ));
 
     // Spawn MQTT publishing task (state: event + heartbeat per docs/vda5050-state-publish-design.md)
@@ -81,5 +83,6 @@ async fn spawn_vehicle_simulator(
         config.settings.state_max_interval_secs,
         config.map.sim_dt_seconds,
         config.settings.visualization_frequency,
+        log_target.clone(),
     ));
 }

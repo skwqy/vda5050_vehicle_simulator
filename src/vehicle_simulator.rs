@@ -2,9 +2,11 @@ use chrono::{DateTime, Utc};
 use paho_mqtt as mqtt;
 use std::sync::Arc;
 use std::time::Duration;
+use log::{info, warn};
 use tokio::time::sleep;
 
 use crate::config;
+use crate::logging::{vehicle_log_target, vehicle_viz_log_target};
 use crate::map::MapModel;
 use crate::mqtt_utils;
 use crate::navigation::{
@@ -44,6 +46,8 @@ pub struct VehicleSimulator {
     motion_edge_sequence: Option<u64>,
     /// Set when state should be published before the next heartbeat (order, loads, node arrival, …).
     state_publish_pending: bool,
+    /// `tracing` target for per-vehicle log files (`vehicle_{serial}`).
+    log_target: String,
 }
 
 impl VehicleSimulator {
@@ -62,6 +66,7 @@ impl VehicleSimulator {
         let connection = Self::create_initial_connection(&config);
         let (state, agv_position) = Self::create_initial_state(&config);
         let visualization = Self::create_initial_visualization(&config, &agv_position);
+        let log_target = vehicle_log_target(&config.vehicle.serial_number);
 
         let mut sim = Self {
             connection_topic,
@@ -79,9 +84,23 @@ impl VehicleSimulator {
             edge_distance_m: 0.0,
             motion_edge_sequence: None,
             state_publish_pending: false,
+            log_target,
         };
         sim.apply_initial_point_from_map();
         sim
+    }
+
+    fn lt(&self) -> &str {
+        self.log_target.as_str()
+    }
+
+    /// Full MQTT topic paths this AGV publishes (`connection`, `state`, `visualization`).
+    pub fn vda_publish_topic_paths(&self) -> (&str, &str, &str) {
+        (
+            self.connection_topic.as_str(),
+            self.state_topic.as_str(),
+            self.visualization_topic.as_str(),
+        )
     }
 
     fn request_state_publish(&mut self) {
@@ -107,14 +126,16 @@ impl VehicleSimulator {
             return;
         };
         let Some(map) = self.map.as_ref() else {
-            eprintln!(
+            warn!(
+                target: self.lt(),
                 "map.initial_point_name is set to {:?} but no map is loaded (enable [map] or fix load); using random start",
                 name
             );
             return;
         };
         let Some((x_m, y_m)) = map.point_world(name) else {
-            eprintln!(
+            warn!(
+                target: self.lt(),
                 "map.initial_point_name {:?} not found in plant model; using random start",
                 name
             );
@@ -228,7 +249,7 @@ impl VehicleSimulator {
                 "pick" => self.handle_pick_action(&action),
                 "drop" => self.handle_drop_action(&action),
                 "stateRequest" => {} // state is published after FINISHED
-                _ => println!("Unknown action type: {}", action.action_type),
+                _ => warn!(target: self.lt(), "Unknown action type: {}", action.action_type),
             }
 
             self.state.action_states[action_state_index].action_status = 
@@ -242,7 +263,7 @@ impl VehicleSimulator {
     }
 
     fn handle_init_position_action(&mut self, action: &Action) {
-        println!("Executing init position action");
+        info!(target: self.lt(), "Executing init position action");
         
         let init_params = self.extract_init_position_parameters(action);
         
@@ -296,16 +317,16 @@ impl VehicleSimulator {
     }
 
     fn handle_pick_action(&mut self, action: &Action) {
-        println!("Executing pick action");
+        info!(target: self.lt(), "Executing pick action");
         
         let load = self.extract_load_parameters(action);
         self.state.loads.push(load);
-        println!("Load added. Total loads: {}", self.state.loads.len());
+        info!(target: self.lt(), "Load added. Total loads: {}", self.state.loads.len());
         self.request_state_publish();
     }
 
     fn handle_drop_action(&mut self, action: &Action) {
-        println!("Executing drop action");
+        info!(target: self.lt(), "Executing drop action");
         
         let load_id = self.extract_string_param(action, "loadId");
         
@@ -313,12 +334,17 @@ impl VehicleSimulator {
             self.state.loads.retain(|load| {
                 load.load_id.as_ref().map_or(true, |id| id != &load_id)
             });
-            println!("Load with ID '{}' removed. Total loads: {}", load_id, self.state.loads.len());
+            info!(
+                target: self.lt(),
+                "Load with ID '{}' removed. Total loads: {}",
+                load_id,
+                self.state.loads.len()
+            );
         } else {
             // If no loadId specified, remove the first load (or all loads)
             if !self.state.loads.is_empty() {
                 self.state.loads.remove(0);
-                println!("First load removed. Total loads: {}", self.state.loads.len());
+                info!(target: self.lt(), "First load removed. Total loads: {}", self.state.loads.len());
             }
         }
         self.request_state_publish();
@@ -404,6 +430,13 @@ impl VehicleSimulator {
     pub async fn publish_connection(&mut self, mqtt_cli: &mqtt::AsyncClient) {
         // Publish initial connection broken state
         let json_connection_broken = serde_json::to_string(&self.connection).unwrap();
+        info!(
+            target: self.lt(),
+            "AGV -> {} ({}): {}",
+            self.connection_topic,
+            utils::get_topic_type(&self.connection_topic),
+            json_connection_broken
+        );
         mqtt_utils::mqtt_publish(mqtt_cli, &self.connection_topic, &json_connection_broken)
             .await
             .unwrap();
@@ -417,6 +450,13 @@ impl VehicleSimulator {
         self.connection.connection_state = ConnectionState::Online;
         
         let json_connection_online = serde_json::to_string(&self.connection).unwrap();
+        info!(
+            target: self.lt(),
+            "AGV -> {} ({}): {}",
+            self.connection_topic,
+            utils::get_topic_type(&self.connection_topic),
+            json_connection_online
+        );
         mqtt_utils::mqtt_publish(mqtt_cli, &self.connection_topic, &json_connection_online)
             .await
             .unwrap();
@@ -427,6 +467,15 @@ impl VehicleSimulator {
         self.visualization.timestamp = utils::get_timestamp();
         
         let json_visualization = serde_json::to_string(&self.visualization).unwrap();
+        if self.config.settings.log_visualization_messages {
+            info!(
+                target: vehicle_viz_log_target(&self.config.vehicle.serial_number).as_str(),
+                "AGV -> {} ({}): {}",
+                self.visualization_topic,
+                utils::get_topic_type(&self.visualization_topic),
+                json_visualization
+            );
+        }
         mqtt_utils::mqtt_publish_qos(
             mqtt_cli,
             &self.visualization_topic,
@@ -442,6 +491,13 @@ impl VehicleSimulator {
         self.state.timestamp = utils::get_timestamp();
         
         let serialized = serde_json::to_string(&self.state).unwrap();
+        info!(
+            target: self.lt(),
+            "AGV -> {} ({}): {}",
+            self.state_topic,
+            utils::get_topic_type(&self.state_topic),
+            serialized
+        );
         mqtt_utils::mqtt_publish_qos(mqtt_cli, &self.state_topic, &serialized, mqtt::QOS_0)
             .await
             .unwrap();
@@ -536,7 +592,7 @@ impl VehicleSimulator {
     }
 
     fn accept_order(&mut self, order_request: Order) {
-        println!("Accepting order: {}", order_request.order_id);
+        info!(target: self.lt(), "Accepting order: {}", order_request.order_id);
         self.order = Some(order_request);
 
         // Update order information
@@ -631,7 +687,7 @@ impl VehicleSimulator {
     }
 
     fn reject_order(&mut self, reason: String) {
-        println!("Rejecting order: {}", reason);
+        info!(target: self.lt(), "Rejecting order: {}", reason);
         self.request_state_publish();
     }
 
@@ -682,7 +738,11 @@ impl VehicleSimulator {
                     if let Some(action_state) = self.state.action_states.iter().find(|state| 
                         state.action_id == check_action.action_id && state.action_status == ActionStatus::Waiting
                     ) {
-                        println!("Executing action type: {:?}", action_state.action_type);
+                        info!(
+                            target: self.lt(),
+                            "Executing action type: {:?}",
+                            action_state.action_type
+                        );
                         self.action_start_time = Some(chrono::Utc::now());
                         self.run_action(check_action.clone());
                         return;

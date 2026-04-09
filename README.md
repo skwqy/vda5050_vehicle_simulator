@@ -2,19 +2,6 @@
 
 This project is a VDA5050-compliant robot simulator written in Rust. It simulates the behavior of automated guided vehicles (AGVs) following the VDA5050 standard, using an MQTT broker to communicate. The simulator is configurable via a TOML file, and it supports basic customization like vehicle configuration, state update frequency, and more. Also simulator supoorts create multiple simulator at the same time.
 
-## Reference documentation and code (local paths)
-
-The following paths point to checked-out specs and related backends on the developer machine. They are recorded here so tools and contributors can open the same material when aligning behavior (protocol text, JSON schemas, OpenTCS plant model, AOS integration).
-
-| Resource | Local path |
-|----------|------------|
-| VDA5050 **2.1.0** release (markdown, schemas, assets) | `D:\source\yeefung\vda5050\VDA5050-release-2.1.0\` |
-| VDA5050 **3.0.0** release | `D:\source\yeefung\vda5050\VDA5050-release-3.0.0\` |
-| **OpenTCS** 7.2.1 | `D:\source\yeefung\openTCS\opentcs-7.2.1\` |
-| **AOS** backend (Yeefung) | `D:\source\yeefung\YFAOS\aos-backend\` |
-
-Adjust drive letters or parent folders if your checkout lives elsewhere; keep this table updated when switching machines or versions.
-
 ## Features
 
 - Simulates AGVs using the VDA5050 standard.
@@ -48,7 +35,29 @@ visualization_frequency = 1          # Frequency for visualization updates (in H
 action_time = 1.0                    # Action execution time (in seconds)
 robot_count = 1                      # Number of robots to simulate
 speed = 0.05                         # Robot speed in meters per second
+# Log outgoing visualization payloads to per-vehicle files (see "Visualization log file" below)
+log_visualization_messages = false
 ```
+
+### Visualization log file
+
+Outgoing **visualization** MQTT payloads can optionally be written to disk, separately from the main vehicle log (`logs/<serial>/vehicle.log*`).
+
+| Setting | Values | Effect |
+|--------|--------|--------|
+| `log_visualization_messages` | `true` / `false` | **`true`**: append each published visualization JSON to `logs/<vehicle serial>/visualization.log` (with the same size-based rotation as other logs). **`false`**: do not write visualization bodies to a file. MQTT visualization messages are still published according to `visualization_frequency`; only file logging is toggled. |
+
+Add or edit under **`[settings]`** in `config.toml`:
+
+```toml
+[settings]
+# ... other settings ...
+log_visualization_messages = true   # enable visualization log file
+```
+
+To **disable** visualization file logging, set it to `false` or omit it (the default is `false`).
+
+Related options (also under `[settings]`): `log_max_file_bytes` and `log_max_files` apply to each log stream, including `visualization.log`.
 
 ### MQTT Broker Section
 - **host**: The address of the MQTT broker (default: localhost).
@@ -72,6 +81,9 @@ speed = 0.05                         # Robot speed in meters per second
 - **action_time**: The time it takes to complete an action (in seconds). This controls how long each task or action will take for the robot to execute.
 - **robot_count**: The number of robots being simulated. This allows you to simulate multiple robots within the same environment.
 - **speed**: The speed of the robot in meters per second, which dictates how fast the robot will move in the simulation.
+- **log_visualization_messages**: When `true`, records outgoing visualization JSON to `logs/<serial>/visualization.log`. When `false` (default), those payloads are not written to that file. Does not stop MQTT visualization traffic.
+- **log_max_file_bytes**: Maximum size in bytes per log file before rotation (default 10 MiB).
+- **log_max_files**: Maximum number of files per log stream, including the active file and numbered backups (default 10).
 
 ## Docker 
 
@@ -121,3 +133,16 @@ This project is licensed under the MIT License. See the [LICENSE](./LICENSE) fil
 ## Libraries Used
 
 This simulator was built using the [`vda5050-types-rs`](https://github.com/kKdH/vda5050-types-rs) library for handling VDA5050 standard data types and message structures.
+
+## Reference documentation and code (local paths)
+
+The following paths point to checked-out specs and related backends on the developer machine. They are recorded here so tools and contributors can open the same material when aligning behavior (protocol text, JSON schemas, OpenTCS plant model, AOS integration).
+
+| Resource | Local path |
+|----------|------------|
+| VDA5050 **2.1.0** release (markdown, schemas, assets) | `D:\source\yeefung\vda5050\VDA5050-release-2.1.0\` |
+| VDA5050 **3.0.0** release | `D:\source\yeefung\vda5050\VDA5050-release-3.0.0\` |
+| **OpenTCS** 7.2.1 | `D:\source\yeefung\openTCS\opentcs-7.2.1\` |
+| **AOS** backend (Yeefung) | `D:\source\yeefung\YFAOS\aos-backend\` |
+
+Adjust drive letters or parent folders if your checkout lives elsewhere; keep this table updated when switching machines or versions.

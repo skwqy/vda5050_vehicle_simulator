@@ -35,6 +35,9 @@ fn create_test_config() -> Config {
             speed: 0.1,
             serial_suffix_start: 1,
             state_max_interval_secs: 30,
+            log_visualization_messages: false,
+            log_max_file_bytes: 10 * 1024 * 1024,
+            log_max_files: 10,
         },
         map: MapConfig::default(),
     }

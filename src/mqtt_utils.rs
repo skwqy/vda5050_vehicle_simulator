@@ -11,9 +11,11 @@ pub fn mqtt_create_opts() -> mqtt::CreateOptions {
     let client_id = Uuid::new_v4().to_string();
 
 
-    println!(
+    tracing::debug!(
+        target: "mqtt",
         "Creating client to: {:?}, client_id: {:?}",
-        server_uri, client_id
+        server_uri,
+        client_id
     );
     let create_opts = mqtt::CreateOptionsBuilder::new()
         .server_uri(&server_uri)

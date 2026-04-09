@@ -5,8 +5,6 @@ use serde::{Serialize, Deserialize};
 
 pub type HeaderId = u64;
 
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-
 /// Current position of the AGV on the map. Optional: Can only be omitted for AGVs without the capability to localize themselves, e.g. line guided AGVs.
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Clone)]

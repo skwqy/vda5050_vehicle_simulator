@@ -21,7 +21,7 @@ Copy-Item (Join-Path $root "config.toml") $out -Force
 $mapsSrc = Join-Path $root "maps"
 if (Test-Path $mapsSrc) {
     Copy-Item $mapsSrc (Join-Path $out "maps") -Recurse -Force
-    Write-Host "Copied maps\ -> $out\maps\"
+    Write-Host "Copied maps\ -> $out\"
 } else {
     Write-Warning "maps folder not found at $mapsSrc - skipped (add maps for [map].xml_path)"
 }

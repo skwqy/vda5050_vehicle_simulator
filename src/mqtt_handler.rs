@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::{process, time::Duration};
 use tokio::sync::Mutex;
+use log::{info, warn};
 
 use crate::config;
 use crate::mqtt_utils;
@@ -13,8 +14,9 @@ use crate::protocol::vda_2_0_0::vda5050_2_0_0_order::Order;
 use crate::protocol::vda_2_0_0::vda5050_2_0_0_instant_actions::InstantActions;
 
 pub async fn subscribe_vda_messages(
-    config: config::Config, 
-    simulator: Arc<Mutex<VehicleSimulator>>
+    config: config::Config,
+    simulator: Arc<Mutex<VehicleSimulator>>,
+    log_target: String,
 ) {
     let base_topic = format!(
         "{}/{}/{}/{}",
@@ -30,7 +32,7 @@ pub async fn subscribe_vda_messages(
     ];
 
     if topics.is_empty() {
-        println!("Error: No topics specified!");
+        tracing::error!(target: "bootstrap", "Error: No topics specified!");
         process::exit(-1);
     }
 
@@ -40,14 +42,29 @@ pub async fn subscribe_vda_messages(
     let message_stream = mqtt_client.get_stream(25);
 
     connect_to_broker(&mqtt_client).await;
-    subscribe_to_topics(&mqtt_client, &topics, &qos).await;
+    info!(
+        target: log_target.as_str(),
+        "MQTT subscriber connected to tcp://{}:{}",
+        config.mqtt_broker.host,
+        config.mqtt_broker.port
+    );
 
-    println!("Waiting for messages on topics: {:?}", topics);
+    subscribe_to_topics(&mqtt_client, &topics, &qos).await;
+    info!(
+        target: log_target.as_str(),
+        "MQTT subscribe OK — MC→AGV topics: {:?} (QoS {:?})",
+        topics,
+        qos
+    );
+    info!(
+        target: log_target.as_str(),
+        "Waiting for messages on subscribed topics (order, instantActions)"
+    );
 
     pin_mut!(message_stream);
     while let Some(msg_opt) = message_stream.next().await {
         if let Some(msg) = msg_opt {
-            handle_incoming_message(msg, &simulator).await;
+            handle_incoming_message(msg, &simulator, log_target.as_str()).await;
         } else {
             handle_connection_loss(&mqtt_client).await;
         }
@@ -59,9 +76,28 @@ pub async fn publish_vda_messages(
     state_max_interval_secs: u64,
     sim_dt_seconds: f32,
     visualization_frequency: u64,
+    log_target: String,
 ) {
     let mqtt_client = create_mqtt_client();
     connect_to_broker(&mqtt_client).await;
+    let broker = config::get_config().mqtt_broker;
+    info!(
+        target: log_target.as_str(),
+        "MQTT publisher connected to tcp://{}:{}",
+        broker.host,
+        broker.port
+    );
+    {
+        let sim = simulator.lock().await;
+        let (conn_tp, state_tp, viz_tp) = sim.vda_publish_topic_paths();
+        info!(
+            target: log_target.as_str(),
+            "AGV publish topics registered (VDA) — connection: {}, state: {}, visualization: {}",
+            conn_tp,
+            state_tp,
+            viz_tp
+        );
+    }
 
     // Publish initial connection (QoS 1)
     simulator.lock().await.publish_connection(&mqtt_client).await;
@@ -109,7 +145,7 @@ pub async fn publish_vda_messages(
 
 fn create_mqtt_client() -> mqtt::AsyncClient {
     mqtt::AsyncClient::new(mqtt_utils::mqtt_create_opts()).unwrap_or_else(|e| {
-        println!("Error creating MQTT client: {:?}", e);
+        tracing::error!(target: "mqtt", "Error creating MQTT client: {:?}", e);
         process::exit(-1);
     })
 }
@@ -129,17 +165,17 @@ async fn connect_to_broker(mqtt_client: &mqtt::AsyncClient) {
 }
 
 async fn subscribe_to_topics(
-    mqtt_client: &mqtt::AsyncClient, 
-    topics: &[String], 
-    qos: &[i32]
+    mqtt_client: &mqtt::AsyncClient,
+    topics: &[String],
+    qos: &[i32],
 ) {
-    println!("Subscribing to topics: {:?}", topics);
     mqtt_client.subscribe_many(topics, qos).await.unwrap();
 }
 
 async fn handle_incoming_message(
-    msg: mqtt::Message, 
-    simulator: &Arc<Mutex<VehicleSimulator>>
+    msg: mqtt::Message,
+    simulator: &Arc<Mutex<VehicleSimulator>>,
+    log_target: &str,
 ) {
     if msg.retained() {
         print!("(R) ");
@@ -149,42 +185,66 @@ async fn handle_incoming_message(
     let topic_type = utils::get_topic_type(topic);
     let payload = String::from_utf8_lossy(msg.payload()).to_string();
 
+    info!(
+        target: log_target,
+        "MC -> {} ({}): {}",
+        topic,
+        topic_type,
+        payload
+    );
+
     match topic_type.as_ref() {
-        "order" => handle_order_message(&payload, simulator).await,
-        "instantActions" => handle_instant_actions_message(&payload, simulator).await,
-        _ => println!("Unknown topic type: {}", topic_type),
+        "order" => handle_order_message(&payload, simulator, log_target).await,
+        "instantActions" => handle_instant_actions_message(&payload, simulator, log_target).await,
+        _ => warn!(target: log_target, "Unknown topic type: {}", topic_type),
     }
 }
 
-async fn handle_order_message(payload: &str, simulator: &Arc<Mutex<VehicleSimulator>>) {
+async fn handle_order_message(
+    payload: &str,
+    simulator: &Arc<Mutex<VehicleSimulator>>,
+    log_target: &str,
+) {
     match serde_json::from_str::<Order>(payload) {
         Ok(order) => {
             simulator.lock().await.process_order(order);
         }
         Err(e) => {
-            println!("Error parsing order message: {}", e);
+            warn!(
+                target: log_target,
+                "Reject order JSON (parse error): {e}"
+            );
+            tracing::warn!(target: "bootstrap", "Error parsing order message: {}", e);
         }
     }
 }
 
-async fn handle_instant_actions_message(payload: &str, simulator: &Arc<Mutex<VehicleSimulator>>) {
+async fn handle_instant_actions_message(
+    payload: &str,
+    simulator: &Arc<Mutex<VehicleSimulator>>,
+    log_target: &str,
+) {
     match serde_json::from_str::<InstantActions>(payload) {
         Ok(instant_actions) => {
             simulator.lock().await.accept_instant_actions(instant_actions);
         }
         Err(e) => {
-            println!("Error parsing instant actions message: {}", e);
+            warn!(
+                target: log_target,
+                "Reject instantActions JSON (parse error): {e}"
+            );
+            tracing::warn!(target: "bootstrap", "Error parsing instant actions message: {}", e);
         }
     }
 }
 
 async fn handle_connection_loss(mqtt_client: &mqtt::AsyncClient) {
-    println!("Lost connection. Attempting to reconnect...");
+    tracing::warn!(target: "mqtt", "Lost connection. Attempting to reconnect...");
     
     while let Err(err) = mqtt_client.reconnect().await {
-        println!("Error reconnecting: {}", err);
+        tracing::warn!(target: "mqtt", "Error reconnecting: {}", err);
         tokio::time::sleep(Duration::from_millis(1000)).await;
     }
     
-    println!("Successfully reconnected to MQTT broker");
+    tracing::info!(target: "mqtt", "Successfully reconnected to MQTT broker");
 } 

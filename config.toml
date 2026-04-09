@@ -37,3 +37,8 @@ robot_count = 1
 speed = 0.05
 # First vehicle serial suffix (default 1). Example: prefix "Vehicle_" + start 2 → "Vehicle_2", then "Vehicle_3", …
 serial_suffix_start = 2
+# Log outgoing visualization JSON to logs/<serial>/visualization.log (10 MiB x 10 files by defaults below)
+log_visualization_messages = false
+# Per log stream: max file size before rotation, and max files (active + backups, oldest removed)
+log_max_file_bytes = 10485760
+log_max_files = 10
